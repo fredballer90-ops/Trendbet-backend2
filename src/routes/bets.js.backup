@@ -1,0 +1,51 @@
+const express = require('express');
+const router = express.Router();
+const admin = require('firebase-admin');
+
+const db = admin.database();
+
+// Place a bet
+router.post('/place', async (req, res) => {
+  try {
+    const { userId, marketId, outcome, amount } = req.body;
+
+    // Validate
+    if (!userId || !marketId || !outcome || !amount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields' 
+      });
+    }
+
+    // Create bet
+    const betData = {
+      userId,
+      marketId,
+      outcome,
+      amount: parseFloat(amount),
+      status: 'pending',
+      placedAt: new Date().toISOString(),
+      betId: `bet_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    };
+
+    // Save to Firebase
+    const betsRef = db.ref('bets');
+    const newBetRef = betsRef.push();
+    await newBetRef.set(betData);
+
+    res.json({
+      success: true,
+      betId: betData.betId,
+      message: 'Bet placed successfully'
+    });
+
+  } catch (error) {
+    console.error('Error placing bet:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+module.exports = router;

@@ -1,73 +1,153 @@
-import User from '../models/User.js';
-import OTP from '../models/OTP.js';
-import jwt from 'jsonwebtoken';
+import { sendOtpEmail } from "../services/emailService.js";
 import bcrypt from 'bcryptjs';
-import { sendEmailOTP, generateOTP } from '../services/emailService.js';
+
+// Firebase database reference
+import admin from "../config/firebase.js";
+const db = admin.database();
+
+// Firebase helper functions
+const firebaseHelpers = {
+  async getUserByEmail(email) {
+    try {
+      const usersRef = db.ref('users');
+      const snapshot = await usersRef.orderByChild('email').equalTo(email.toLowerCase()).once('value');
+      const users = snapshot.val();
+      if (users) {
+        const userId = Object.keys(users)[0];
+        return { ...users[userId], id: userId };
+      }
+      return null;
+    } catch (error) {
+      console.error('Firebase getUserByEmail error:', error);
+      throw error;
+    }
+  },
+
+  async createUser(userData) {
+    try {
+      const usersRef = db.ref('users');
+      const newUserRef = usersRef.push();
+      await newUserRef.set({
+        ...userData,
+        createdAt: new Date().toISOString(),
+        emailVerified: false
+      });
+      return { ...userData, id: newUserRef.key };
+    } catch (error) {
+      console.error('Firebase createUser error:', error);
+      throw error;
+    }
+  },
+
+  async storeOTP(email, otpCode, type) {
+    try {
+      const otpRef = db.ref('otps').push();
+      await otpRef.set({
+        email: email.toLowerCase(),
+        code: otpCode,
+        type,
+        expiresAt: Date.now() + 600000,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Firebase storeOTP error:', error);
+      throw error;
+    }
+  },
+
+  async verifyOTP(email, otpCode, type) {
+    try {
+      const otpsRef = db.ref('otps');
+      const snapshot = await otpsRef.orderByChild('email').equalTo(email.toLowerCase()).once('value');
+      const otps = snapshot.val();
+      if (!otps) return false;
+      for (const [key, otp] of Object.entries(otps)) {
+        if (otp.code === otpCode && otp.type === type && otp.expiresAt > Date.now()) {
+          await db.ref(`otps/${key}`).remove();
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      console.error('Firebase verifyOTP error:', error);
+      throw error;
+    }
+  },
+
+  async getUserById(userId) {
+    try {
+      const userRef = db.ref(`users/${userId}`);
+      const snapshot = await userRef.once('value');
+      const user = snapshot.val();
+      return user ? { ...user, id: userId } : null;
+    } catch (error) {
+      console.error('Firebase getUserById error:', error);
+      throw error;
+    }
+  },
+
+  async updateUser(userId, updates) {
+    try {
+      await db.ref(`users/${userId}`).update(updates);
+    } catch (error) {
+      console.error('Firebase updateUser error:', error);
+      throw error;
+    }
+  }
+};
 
 export const register = async (req, res) => {
-    try {
-    const { email, password, name } = req.body;
+  try {
+    const { email, password, username, name } = req.body;
 
-    console.log('📧 Registration attempt:', { name, email });
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-
-    // Validate password strength
-    const passwordValidation = validatePassword(password);
-    if (!passwordValidation.valid) {
+    if (!email || !password || !username || !name) {
       return res.status(400).json({
-        error: passwordValidation.error
+        success: false,
+        message: 'All fields are required'
       });
     }
 
-    // Validate name
-    if (!name || name.trim().length < 2) {
-      return res.status(400).json({ error: 'Name is required and must be at least 2 characters long' });
-    }
-
-    // Check if user exists by email only
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    const existingUser = await firebaseHelpers.getUserByEmail(email);
     if (existingUser) {
       return res.status(400).json({
-        error: 'User with this email already exists'
+        success: false,
+        message: 'User with this email already exists'
       });
     }
 
-    // Create user with email only
-    const user = await User.create({
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      password
-    });
-
-    // Generate and send OTP to email
-    const otpCode = generateOTP();
-    console.log('📨 Sending registration OTP to email:', email, 'OTP:', otpCode);
+    const passwordHash = await bcrypt.hash(password, 10);
     
-    await sendEmailOTP(email, otpCode);
+    const userData = {
+      email: email.toLowerCase(),
+      passwordHash,
+      username,
+      name,
+      balance: 1000,
+      totalWagered: 0,
+      totalWinnings: 0,
+      role: 'user',
+      emailVerified: false
+    };
 
-    // Store OTP in database
-    await OTP.create({
-      email: email.toLowerCase().trim(),
-      code: otpCode,
-      type: 'registration',
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+    const user = await firebaseHelpers.createUser(userData);
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await firebaseHelpers.storeOTP(email, otp, 'registration');
+
+    await sendOtpEmail(email, otp);
+
+    res.status(200).json({
+      success: true,
+      message: 'Registration successful. Please check your email for the OTP.',
+      email: email,
+      debugOtp: otp // REMOVE THIS IN PRODUCTION
     });
-
-    res.status(201).json({
-      message: 'User registered successfully. OTP sent to email.',
-      userId: user._id,
-      // Only in development - remove in production
-      ...(process.env.NODE_ENV === 'development' && { debugOtp: otpCode })
-    });
-
   } catch (error) {
-    console.error('❌ Registration error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Registration error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during registration'
+    });
   }
 };
 
@@ -75,171 +155,190 @@ export const login = async (req, res) => {
   try {
     const { identifier, password } = req.body;
 
-    console.log('🔐 Login attempt:', { identifier });
+    if (!identifier || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
 
-    // Find user by email only
-    const user = await User.findOne({ email: identifier.toLowerCase().trim() });
+    const user = await firebaseHelpers.getUserByEmail(identifier);
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
     }
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
     }
 
-    // Generate and send OTP to email for login verification
-    const otpCode = generateOTP();
-    console.log('📨 Sending login OTP to email:', user.email, 'OTP:', otpCode);
-    
-    await sendEmailOTP(user.email, otpCode);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await firebaseHelpers.storeOTP(user.email, otp, 'login');
 
-    // Store OTP in database
-    await OTP.create({
+    await sendOtpEmail(user.email, otp);
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP sent to your email',
       email: user.email,
-      code: otpCode,
-      type: 'login',
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+      debugOtp: otp // REMOVE THIS IN PRODUCTION
     });
-
-    res.json({
-      message: 'OTP sent to your email for verification',
-      userId: user._id,
-      requiresOtp: true,
-      // Only in development - remove in production
-      ...(process.env.NODE_ENV === 'development' && { debugOtp: otpCode })
-    });
-
   } catch (error) {
-    console.error('❌ Login error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during login'
+    });
   }
 };
 
 export const verifyLoginOTP = async (req, res) => {
   try {
-    const { email, otpCode } = req.body;
+    const { phone, otpCode } = req.body;
+    const email = phone;
 
-    console.log('✅ Verifying login OTP:', { email });
-
-    // Find valid OTP record
-    const otpRecord = await OTP.findOne({
-      email: email.toLowerCase().trim(),
-      code: otpCode,
-      type: 'login',
-      expiresAt: { $gt: new Date() }
-    });
-
-    if (!otpRecord) {
-      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    if (!email || !otpCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required'
+      });
     }
 
-    // Get user by email and generate JWT token
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const isValid = await firebaseHelpers.verifyOTP(email, otpCode, 'login');
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP'
+      });
+    }
 
-    // Mark OTP as verified and delete it
-    await OTP.deleteOne({ _id: otpRecord._id });
+    const user = await firebaseHelpers.getUserByEmail(email);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
 
-    console.log('✅ Login successful for user:', user.email);
+    const token = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
 
-    res.json({
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
       token,
       user: {
-        id: user._id,
-        name: user.name,
+        id: user.id,
         email: user.email,
-        balance: user.balance,
-        role: user.role
+        username: user.username,
+        name: user.name,
+        balance: user.balance || 0,
+        role: user.role || 'user'
       }
     });
-
   } catch (error) {
-    console.error('❌ Login OTP verification error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('OTP verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during OTP verification'
+    });
   }
 };
 
 export const verifyRegistrationOTP = async (req, res) => {
   try {
-    const { email, otpCode, userId } = req.body;
+    const { phone, otpCode, userId } = req.body;
+    const email = phone;
 
-    console.log('✅ Verifying registration OTP:', { email, userId });
-
-    // Find valid OTP record
-    const otpRecord = await OTP.findOne({
-      email: email.toLowerCase().trim(),
-      code: otpCode,
-      type: 'registration',
-      expiresAt: { $gt: new Date() }
-    });
-
-    if (!otpRecord) {
-      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    if (!email || !otpCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required'
+      });
     }
 
-    // Update user as verified and generate JWT
-    await User.findByIdAndUpdate(userId, {
-      emailVerified: true
-    });
+    const isValid = await firebaseHelpers.verifyOTP(email, otpCode, 'registration');
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP'
+      });
+    }
 
-    const user = await User.findById(userId);
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const user = await firebaseHelpers.getUserByEmail(email);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
 
-    // Mark OTP as verified and delete it
-    await OTP.deleteOne({ _id: otpRecord._id });
+    await firebaseHelpers.updateUser(user.id, { emailVerified: true });
 
-    console.log('✅ Registration verified for user:', user.email);
+    const token = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
 
-    res.json({
+    res.status(200).json({
+      success: true,
+      message: 'Registration verified successfully',
       token,
       user: {
-        id: user._id,
-        name: user.name,
+        id: user.id,
         email: user.email,
-        balance: user.balance,
-        role: user.role
+        username: user.username,
+        name: user.name,
+        balance: user.balance || 0,
+        role: user.role || 'user'
       }
     });
-
   } catch (error) {
-    console.error('❌ Registration OTP verification error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('OTP verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during OTP verification'
+    });
   }
 };
 
-// Password validation helper
-function validatePassword(password) {
-  const minLength = 8;
-  const hasUpperCase = /[A-Z]/.test(password);
-  const hasLowerCase = /[a-z]/.test(password);
-  const hasNumbers = /\d/.test(password);
-  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+export const resendOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
 
-  if (password.length < minLength) {
-    return { valid: false, error: 'Password must be at least 8 characters long' };
-  }
-  if (!hasUpperCase) {
-    return { valid: false, error: 'Password must contain at least one uppercase letter' };
-  }
-  if (!hasLowerCase) {
-    return { valid: false, error: 'Password must contain at least one lowercase letter' };
-  }
-  if (!hasNumbers) {
-    return { valid: false, error: 'Password must contain at least one number' };
-  }
-  if (!hasSpecialChar) {
-    return { valid: false, error: 'Password must contain at least one special character' };
-  }
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
 
-  return { valid: true };
-}
+    const user = await firebaseHelpers.getUserByEmail(email);
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await firebaseHelpers.storeOTP(email, otp, 'login');
+
+    await sendOtpEmail(email, otp);
+
+    res.status(200).json({
+      success: true,
+      message: 'New OTP sent to your email',
+      email: email,
+      debugOtp: otp // REMOVE THIS IN PRODUCTION
+    });
+  } catch (error) {
+    console.error('Resend OTP error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while resending OTP'
+    });
+  }
+};

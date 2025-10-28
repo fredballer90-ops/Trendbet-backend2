@@ -1,67 +1,62 @@
-// backend/src/models/User.js
-import mongoose from "mongoose";
-import bcrypt from "bcryptjs";
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 
-const userSchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: [true, "Name is required"],
-      trim: true,
-      maxlength: [50, "Name cannot exceed 50 characters"],
-    },
-    email: {
-      type: String,
-      required: [true, "Email is required"],
-      unique: true,
-      lowercase: true,
-      trim: true,
-      match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Please enter a valid email address"],
-    },
-    emailVerified: {
-      type: Boolean,
-      default: false,
-    },
-    password: {
-      type: String,
-      required: [true, "Password is required"],
-      minlength: [8, "Password must be at least 8 characters long"],
-    },
-    balance: {
-      type: Number,
-      default: 0,
-      min: [0, "Balance cannot be negative"],
-    },
-    role: {
-      type: String,
-      enum: ["user", "admin", "superadmin"],
-      default: "user",
-    },
-    totalWagered: {
-      type: Number,
-      default: 0,
-    },
-    totalWinnings: {
-      type: Number,
-      default: 0,
-    },
+const userSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true
   },
-  {
-    timestamps: true,
+  password: {
+    type: String,
+    required: function() {
+      return !this.googleId;
+    }
+  },
+  username: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  name: {
+    type: String,
+    required: true
+  },
+  googleId: {
+    type: String,
+    sparse: true
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
+  otp: {
+    type: String
+  },
+  otpExpires: {
+    type: Date
   }
-);
-
-// ✅ Hash password before saving
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
-  this.password = await bcrypt.hash(this.password, 12);
-  next();
+}, {
+  timestamps: true
 });
 
-// ✅ Compare password method
-userSchema.methods.comparePassword = async function (candidatePassword) {
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password') || !this.password) return next();
+  
+  try {
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  if (!this.password) return false;
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// ✅ Export model correctly (quotes are required)
-export default mongoose.model("User", userSchema);
+export default mongoose.model('User', userSchema);

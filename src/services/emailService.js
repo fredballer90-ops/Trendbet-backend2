@@ -1,50 +1,62 @@
 import nodemailer from "nodemailer";
 
-/**
- * Note:
- * - Set EMAIL_USER and EMAIL_PASS in your env.
- * - For Gmail, use an App Password (recommended) or an SMTP provider.
- */
+console.log('🔧 Email Service Loading...');
+console.log('Email User:', process.env.EMAIL_USER);
+console.log('Email Pass exists:', !!process.env.EMAIL_PASS);
 
+// Create reusable transporter using your SMTP configuration
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
+    pass: process.env.EMAIL_PASS,
+  },
 });
 
 /**
- * Send OTP email
- * @param {string} email
- * @param {string} otpCode
+ * Send an email
+ * @param {string} to - Recipient email address
+ * @param {string} subject - Subject of the email
+ * @param {string} html - HTML content of the email
  */
-export const sendEmailOTP = async (email, otpCode) => {
+export async function sendEmail(to, subject, html) {
   try {
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "Your OTP Code - TrendBet",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width:600px;margin:0 auto;">
-          <h2 style="color:#333;text-align:center;">TrendBet Verification</h2>
-          <p>Use the following OTP code to complete your authentication:</p>
-          <div style="background:#f4f4f4;padding:15px;border-radius:8px;text-align:center;font-size:28px;letter-spacing:8px;margin:25px 0;font-weight:bold;color:#333;">
-            ${otpCode}
-          </div>
-          <p style="color:#666;font-size:14px;">This code will expire in 10 minutes.</p>
-        </div>`
-    };
-    await transporter.sendMail(mailOptions);
-    console.log("✅ OTP email sent to:", email);
-    return true;
-  } catch (err) {
-    console.error("❌ Failed to send OTP email:", err);
-    throw new Error("Failed to send OTP email");
-  }
-};
+    console.log('📧 Attempting to send email to:', to);
+    
+    const info = await transporter.sendMail({
+      from: `"TrendBet Notifications" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      html,
+    });
 
-/** Generate 6-digit OTP */
-export const generateOTP = () => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-};
+    console.log("✅ Email sent:", info.messageId);
+    return info;
+  } catch (error) {
+    console.error("❌ Error sending email:", error.message);
+    throw error;
+  }
+}
+
+/**
+ * Send a One-Time Password (OTP) email
+ * @param {string} to - Recipient email address
+ * @param {string} otp - The OTP code
+ */
+export async function sendOtpEmail(to, otp) {
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #333; padding: 20px;">
+      <h2>🔐 Your TrendBet OTP Code</h2>
+      <p>Use the code below to verify your account or complete your login:</p>
+      <div style="background: #222; color: #fff; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 20px;">
+        ${otp}
+      </div>
+      <p>This code will expire in 5 minutes.</p>
+      <hr />
+      <p>If you didn't request this, you can ignore this message.</p>
+    </div>
+  `;
+  return sendEmail(to, "Your TrendBet OTP Code", html);
+}

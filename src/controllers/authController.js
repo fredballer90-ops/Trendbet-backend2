@@ -1,11 +1,12 @@
 import { sendOtpEmail } from "../services/emailService.js";
 import bcrypt from 'bcryptjs';
+import otpService from "../services/otpService.js";
 
 // Firebase database reference
 import admin from "../config/firebase.js";
 const db = admin.database();
 
-// Firebase helper functions
+// Firebase helper functions (keep for user management)
 const firebaseHelpers = {
   async getUserByEmail(email) {
     try {
@@ -35,41 +36,6 @@ const firebaseHelpers = {
       return { ...userData, id: newUserRef.key };
     } catch (error) {
       console.error('Firebase createUser error:', error);
-      throw error;
-    }
-  },
-
-  async storeOTP(email, otpCode, type) {
-    try {
-      const otpRef = db.ref('otps').push();
-      await otpRef.set({
-        email: email.toLowerCase(),
-        code: otpCode,
-        type,
-        expiresAt: Date.now() + 600000,
-        createdAt: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('Firebase storeOTP error:', error);
-      throw error;
-    }
-  },
-
-  async verifyOTP(email, otpCode, type) {
-    try {
-      const otpsRef = db.ref('otps');
-      const snapshot = await otpsRef.orderByChild('email').equalTo(email.toLowerCase()).once('value');
-      const otps = snapshot.val();
-      if (!otps) return false;
-      for (const [key, otp] of Object.entries(otps)) {
-        if (otp.code === otpCode && otp.type === type && otp.expiresAt > Date.now()) {
-          await db.ref(`otps/${key}`).remove();
-          return true;
-        }
-      }
-      return false;
-    } catch (error) {
-      console.error('Firebase verifyOTP error:', error);
       throw error;
     }
   },
@@ -116,7 +82,7 @@ export const register = async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    
+
     const userData = {
       email: email.toLowerCase(),
       passwordHash,
@@ -131,16 +97,17 @@ export const register = async (req, res) => {
 
     const user = await firebaseHelpers.createUser(userData);
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await firebaseHelpers.storeOTP(email, otp, 'registration');
-
-    await sendOtpEmail(email, otp);
+    // Generate and store OTP in MongoDB
+    const otpRecord = await otpService.generateOTP(email, 'registration');
+    
+    // Send OTP via email
+    await otpService.sendEmailOTP(email, otpRecord.code);
 
     res.status(200).json({
       success: true,
       message: 'Registration successful. Please check your email for the OTP.',
       email: email,
-      debugOtp: otp // REMOVE THIS IN PRODUCTION
+      debugOtp: otpRecord.code // REMOVE THIS IN PRODUCTION
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -178,16 +145,17 @@ export const login = async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await firebaseHelpers.storeOTP(user.email, otp, 'login');
-
-    await sendOtpEmail(user.email, otp);
+    // Generate and store OTP in MongoDB
+    const otpRecord = await otpService.generateOTP(user.email, 'login');
+    
+    // Send OTP via email
+    await otpService.sendEmailOTP(user.email, otpRecord.code);
 
     res.status(200).json({
       success: true,
       message: 'OTP sent to your email',
       email: user.email,
-      debugOtp: otp // REMOVE THIS IN PRODUCTION
+      debugOtp: otpRecord.code // REMOVE THIS IN PRODUCTION
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -210,7 +178,8 @@ export const verifyLoginOTP = async (req, res) => {
       });
     }
 
-    const isValid = await firebaseHelpers.verifyOTP(email, otpCode, 'login');
+    // Verify OTP from MongoDB
+    const isValid = await otpService.verifyOTP(email, otpCode);
     if (!isValid) {
       return res.status(400).json({
         success: false,
@@ -262,7 +231,8 @@ export const verifyRegistrationOTP = async (req, res) => {
       });
     }
 
-    const isValid = await firebaseHelpers.verifyOTP(email, otpCode, 'registration');
+    // Verify OTP from MongoDB
+    const isValid = await otpService.verifyOTP(email, otpCode);
     if (!isValid) {
       return res.status(400).json({
         success: false,
@@ -323,16 +293,17 @@ export const resendOTP = async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await firebaseHelpers.storeOTP(email, otp, 'login');
-
-    await sendOtpEmail(email, otp);
+    // Generate and store OTP in MongoDB
+    const otpRecord = await otpService.generateOTP(email, 'login');
+    
+    // Send OTP via email
+    await otpService.sendEmailOTP(email, otpRecord.code);
 
     res.status(200).json({
       success: true,
       message: 'New OTP sent to your email',
       email: email,
-      debugOtp: otp // REMOVE THIS IN PRODUCTION
+      debugOtp: otpRecord.code // REMOVE THIS IN PRODUCTION
     });
   } catch (error) {
     console.error('Resend OTP error:', error);

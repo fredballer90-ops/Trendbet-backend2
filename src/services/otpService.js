@@ -1,100 +1,103 @@
-const OTP = require('../models/OTP');
-const nodemailer = require('nodemailer');
+import OTP from '../models/OTP.js';
+import { sendOtpEmail } from './emailService.js';
 
 class OTPService {
-  constructor() {
-    // Simple email transporter for development
-    this.emailTransporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
-    });
+  /**
+   * Generate a 6-digit OTP and store in MongoDB
+   */
+  async generateOTP(email, type = 'login') {
+    try {
+      // Clear existing unverified OTPs for this email
+      await OTP.deleteMany({
+        email: email.toLowerCase(),
+        verified: false
+      });
+
+      // Generate 6-digit code
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+      // Save to MongoDB
+      const otp = await OTP.create({
+        email: email.toLowerCase(),
+        code,
+        type,
+        expiresAt
+      });
+
+      console.log(`✅ OTP generated for ${email}: ${code} (expires in 10 min)`);
+      return otp;
+    } catch (error) {
+      console.error('❌ OTP generation error:', error);
+      throw error;
+    }
   }
 
-  async generateOTP(emailOrPhone, type) {
-    // Clear existing OTPs
-    await OTP.deleteMany({ 
-      emailOrPhone, 
-      verified: false 
-    });
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    const otp = await OTP.create({
-      emailOrPhone,
-      code,
-      type,
-      expiresAt
-    });
-
-    return otp;
-  }
-
-  async sendSMSOTP(phone, code) {
-    // For development - just log to console
-    // In production, integrate with Africa's Talking or another SMS provider
-    console.log(`📱 SMS OTP for ${phone}: ${code}`);
-    console.log(`💡 In production, this would be sent via SMS service`);
-    return true;
-  }
-
+  /**
+   * Send OTP via email
+   */
   async sendEmailOTP(email, code) {
     try {
-      // Only send email if credentials are configured
-      if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-        await this.emailTransporter.sendMail({
-          from: process.env.EMAIL_USER,
-          to: email,
-          subject: 'TrendBet Verification Code',
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #059669;">TrendBet Verification</h2>
-              <p>Your verification code is:</p>
-              <h1 style="font-size: 32px; color: #1f2937; letter-spacing: 5px;">${code}</h1>
-              <p>This code will expire in 10 minutes.</p>
-              <p>If you didn't request this code, please ignore this email.</p>
-            </div>
-          `
-        });
-        console.log(`📧 Email OTP sent to ${email}`);
-        return true;
-      } else {
-        console.log(`📧 Email OTP for ${email}: ${code} (Email not configured)`);
-        return true;
-      }
-    } catch (error) {
-      console.error('Email sending failed:', error);
-      console.log(`📧 Email OTP for ${email}: ${code} (Fallback)`);
+      await sendOtpEmail(email, code);
+      console.log(`📧 OTP email sent to ${email}`);
       return true;
+    } catch (error) {
+      console.error('❌ Email sending failed:', error);
+      // Log but don't throw - allow fallback
+      console.log(`📧 OTP for ${email}: ${code} (Email failed, check logs)`);
+      return false;
     }
   }
 
-  async verifyOTP(emailOrPhone, submittedCode) {
-    const otp = await OTP.findOne({
-      emailOrPhone,
-      code: submittedCode,
-      expiresAt: { $gt: new Date() },
-      verified: false
-    });
+  /**
+   * Verify submitted OTP code
+   */
+  async verifyOTP(email, submittedCode) {
+    try {
+      const otp = await OTP.findOne({
+        email: email.toLowerCase(),
+        code: submittedCode,
+        expiresAt: { $gt: new Date() },
+        verified: false
+      });
 
-    if (!otp) {
-      // Increment attempts for rate limiting
-      await OTP.updateOne(
-        { emailOrPhone, verified: false },
-        { $inc: { attempts: 1 } }
-      );
+      if (!otp) {
+        // Increment failed attempts for rate limiting
+        await OTP.updateOne(
+          { email: email.toLowerCase(), verified: false },
+          { $inc: { attempts: 1 } }
+        );
+        console.log(`❌ Invalid or expired OTP for ${email}`);
+        return false;
+      }
+
+      // Mark as verified
+      otp.verified = true;
+      await otp.save();
+
+      console.log(`✅ OTP verified for ${email}`);
+      return true;
+    } catch (error) {
+      console.error('❌ OTP verification error:', error);
       return false;
     }
+  }
 
-    // Mark OTP as verified
-    otp.verified = true;
-    await otp.save();
-
-    return true;
+  /**
+   * Clean up expired OTPs (optional - MongoDB TTL index handles this)
+   */
+  async cleanupExpired() {
+    try {
+      const result = await OTP.deleteMany({
+        expiresAt: { $lt: new Date() }
+      });
+      console.log(`🧹 Cleaned up ${result.deletedCount} expired OTPs`);
+      return result.deletedCount;
+    } catch (error) {
+      console.error('❌ Cleanup error:', error);
+      return 0;
+    }
   }
 }
 
-module.exports = new OTPService();
+export default new OTPService();

@@ -2,28 +2,65 @@ import 'dotenv/config';
 import express from "express";
 import cors from "cors";
 import session from "express-session";
+import mongoose from "mongoose";
+import MongoStore from "connect-mongo";
 import admin from "./config/firebase.js";
-import bcrypt from 'bcryptjs';                       
+import bcrypt from 'bcryptjs';
+
 // Import email service
 import { sendOtpEmail } from "./services/emailService.js";
 // Import Passport for Google OAuth
 import { passport } from "./config/passport.js";
 
-// route imports (ESM)
+// Route imports (ESM)
 import authRouter from "./routes/auth.js";
 import betsRoutes from "./routes/bets.js";
 import marketsRouter from "./routes/markets.js";
 
-// betting engine (only import what exists)
+// Betting engine (only import what exists)
 import { placeBet, resolveMarket } from "./utils/bettingEngine.js";
 
 const app = express();
 
-// Session middleware (MUST be before passport)
+// ========== MONGODB CONNECTION ==========
+const MONGO_URI = process.env.MONGO_URI;
+
+if (!MONGO_URI) {
+  console.error('❌ MONGO_URI not found in environment variables');
+  process.exit(1);
+}
+
+mongoose.connect(MONGO_URI)
+  .then(() => {
+    console.log('✅ MongoDB Connected Successfully');
+    console.log('📦 Database:', mongoose.connection.name);
+  })
+  .catch((error) => {
+    console.error('❌ MongoDB Connection Error:', error.message);
+    process.exit(1);
+  });
+
+// Monitor MongoDB connection
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️  MongoDB Disconnected');
+});
+
+mongoose.connection.on('error', (error) => {
+  console.error('❌ MongoDB Error:', error);
+});
+
+// ========== SESSION STORE (MongoDB) ==========
 app.use(session({
-  secret: process.env.JWT_SECRET || 'your-super-secret-key-change-in-production',
+  secret: process.env.SESSION_SECRET || 'your-super-secret-key-change-in-production',
   resave: false,
   saveUninitialized: false,
+  store: MongoStore.create({
+    mongoUrl: MONGO_URI,
+    touchAfter: 24 * 3600, // Lazy session update (24 hours)
+    crypto: {
+      secret: process.env.SESSION_SECRET || 'session-encryption-key'
+    }
+  }),
   cookie: {
     secure: process.env.NODE_ENV === 'production', // true in production
     httpOnly: true,
@@ -96,43 +133,6 @@ const firebaseHelpers = {
     }
   },
 
-  async storeOTP(email, otpCode, type) {
-    if (!db) throw new Error('Firebase not initialized');
-    try {
-      const otpRef = db.ref('otps').push();
-      await otpRef.set({
-        email: email.toLowerCase(),
-        code: otpCode,
-        type,
-        expiresAt: Date.now() + 600000,
-        createdAt: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('Firebase storeOTP error:', error);
-      throw error;
-    }
-  },
-
-  async verifyOTP(email, otpCode, type) {
-    if (!db) throw new Error('Firebase not initialized');
-    try {
-      const otpsRef = db.ref('otps');
-      const snapshot = await otpsRef.orderByChild('email').equalTo(email.toLowerCase()).once('value');
-      const otps = snapshot.val();
-      if (!otps) return false;
-      for (const [key, otp] of Object.entries(otps)) {
-        if (otp.code === otpCode && otp.type === type && otp.expiresAt > Date.now()) {
-          await db.ref(`otps/${key}`).remove();
-          return true;
-        }
-      }
-      return false;
-    } catch (error) {
-      console.error('Firebase verifyOTP error:', error);
-      throw error;
-    }
-  },
-
   async getUserById(userId) {
     if (!db) throw new Error('Firebase not initialized');
     try {
@@ -158,17 +158,20 @@ app.get('/health', async (req, res) => {
     }
     res.json({
       status: 'OK',
-      message: 'TrendBet API with Firebase RTDB is running!',
-      database: db ? 'Firebase Realtime Database' : 'No Database',
+      message: 'TrendBet API with Firebase RTDB + MongoDB is running!',
+      firebase: db ? 'Firebase Realtime Database' : 'No Database',
+      mongodb: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       usersCount: userCount,
       firebaseStatus: db ? '✅ Connected' : '❌ Disconnected',
+      mongoStatus: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     res.json({
       status: 'OK',
-      message: 'TrendBet API is running (Firebase error)',
-      database: 'Firebase (Connection Issue)',
+      message: 'TrendBet API is running (Database error)',
+      firebase: 'Firebase (Connection Issue)',
+      mongodb: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       firebaseStatus: '❌ Connection Error',
       timestamp: new Date().toISOString()
     });
@@ -185,17 +188,20 @@ app.get('/api/health', async (req, res) => {
     }
     res.json({
       status: 'OK',
-      message: 'TrendBet API with Firebase RTDB is running!',
-      database: db ? 'Firebase Realtime Database' : 'No Database',
+      message: 'TrendBet API with Firebase RTDB + MongoDB is running!',
+      firebase: db ? 'Firebase Realtime Database' : 'No Database',
+      mongodb: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       usersCount: userCount,
       firebaseStatus: db ? '✅ Connected' : '❌ Disconnected',
+      mongoStatus: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     res.json({
       status: 'OK',
-      message: 'TrendBet API is running (Firebase error)',
-      database: 'Firebase (Connection Issue)',
+      message: 'TrendBet API is running (Database error)',
+      firebase: 'Firebase (Connection Issue)',
+      mongodb: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected',
       firebaseStatus: '❌ Connection Error',
       timestamp: new Date().toISOString()
     });
@@ -208,7 +214,8 @@ app.get('/', (req, res) => {
     message: '🎲 TrendBet API',
     version: '1.0.0',
     status: 'running',
-    firebase: db ? '✅ Connected' : '❌ Disconnected'
+    firebase: db ? '✅ Connected' : '❌ Disconnected',
+    mongodb: mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected'
   });
 });
 
@@ -434,13 +441,18 @@ app.use('/api/bets', betsRoutes);
 // Use markets routes
 app.use('/api/markets', marketsRouter);
 
-// Start server
+// Start server only after MongoDB connects
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`🚀 TrendBet Server running on port ${PORT}`);
-  console.log(`🔥 Firebase Status: ${db ? '✅ Connected' : '❌ Disconnected'}`);
-  console.log(`📧 AUTH: Email-only authentication with OTP via email`);
-  console.log(`🔐 GOOGLE: OAuth enabled at /api/auth/google`);
-  console.log(`🎯 BETTING: Bet routes enabled`);
-  console.log(`📊 MARKETS: Market routes enabled`);
+
+// Wait for MongoDB to be ready before starting HTTP server
+mongoose.connection.once('open', () => {
+  app.listen(PORT, () => {
+    console.log(`🚀 TrendBet Server running on port ${PORT}`);
+    console.log(`🔥 Firebase Status: ${db ? '✅ Connected' : '❌ Disconnected'}`);
+    console.log(`📦 MongoDB Status: ${mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected'}`);
+    console.log(`📧 AUTH: Email-only authentication with OTP via email`);
+    console.log(`🔐 GOOGLE: OAuth enabled at /api/auth/google`);
+    console.log(`🎯 BETTING: Bet routes enabled`);
+    console.log(`📊 MARKETS: Market routes enabled`);
+  });
 });

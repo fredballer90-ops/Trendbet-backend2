@@ -1,64 +1,48 @@
-import nodemailer from "nodemailer";
+import axios from "axios";
 
 console.log('🔧 Email Service Loading...');
-console.log('Email Provider: Resend SMTP');
-console.log('Email User:', process.env.EMAIL_USER);
+console.log('Email Provider: Resend API');
 console.log('Email API Key exists:', !!process.env.EMAIL_PASS);
 
-// Resend SMTP configuration
-const transporter = nodemailer.createTransport({
-  host: "smtp.resend.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: "resend",
-    pass: process.env.EMAIL_PASS,
-  },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-});
-
-// Verify connection on startup
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Email transporter verification failed:', error.message);
-  } else {
-    console.log('✅ Resend email server is ready to send messages');
-  }
-});
-
 /**
- * Send an email
- * @param {string} to - Recipient email address
- * @param {string} subject - Subject of the email
- * @param {string} html - HTML content of the email
+ * Send an email via Resend API
+ * @param {string} to - Recipient email
+ * @param {string} subject - Email subject
+ * @param {string} html - HTML content
  */
 export async function sendEmail(to, subject, html) {
   try {
-    console.log('📧 Attempting to send email via Resend to:', to);
+    console.log('📧 Attempting to send email via Resend API to:', to);
 
-    const info = await transporter.sendMail({
-      from: process.env.EMAIL_USER || "TrendBet <onboarding@resend.dev>",
-      to,
-      subject,
-      html,
-    });
+    const response = await axios.post(
+      "https://api.resend.com/emails",
+      {
+        from: process.env.EMAIL_USER || "TrendBet <onboarding@resend.dev>",
+        to,
+        subject,
+        html,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.EMAIL_PASS}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-    console.log("✅ Email sent successfully:", info.messageId);
-    console.log("📧 Response:", info.response);
-    return info;
+    console.log("✅ Email sent successfully:", response.data.id);
+    return response.data;
+
   } catch (error) {
     console.error("❌ Error sending email:", error.message);
-    console.error("❌ Error code:", error.code);
     throw error;
   }
 }
 
 /**
  * Send a One-Time Password (OTP) email
- * @param {string} to - Recipient email address
- * @param {string} otp - The OTP code
+ * @param {string} to - Recipient email
+ * @param {string} otp - OTP code
  */
 export async function sendOtpEmail(to, otp) {
   const html = `

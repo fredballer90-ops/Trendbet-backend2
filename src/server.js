@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import cors from "cors";
 import session from "express-session";
+import adminRouter from "./routes/admin.js";
 import mongoose from "mongoose";
 import MongoStore from "connect-mongo";
 import admin from "./config/firebase.js";
@@ -71,7 +72,7 @@ app.use(session({
 // Initialize Passport
 app.use(passport.initialize());
 app.use(passport.session());
-
+app.use('/api/admin', adminRouter);
 app.use(cors({
   origin: [
     'http://localhost:3000',

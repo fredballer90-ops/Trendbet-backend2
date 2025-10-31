@@ -1,217 +1,274 @@
 import express from 'express';
-import admin from '../config/firebase.js';
+import admin from 'firebase-admin';
+import {
+  resolveMarket,
+  setMarketFreeze,
+  setMarketOdds,
+  removeOddsOverride,
+  getAllMarkets
+} from '../utils/bettingEngine.js';
 
 const router = express.Router();
-const db = admin.database();
 
-// Middleware to check admin role
-const requireAdmin = async (req, res, next) => {
-  try {
-    const token = req.headers.authorization?.split('Bearer ')[1];
-    if (!token) {
-      return res.status(401).json({ success: false, error: 'No token provided' });
-    }
-
-    // Decode token (you should verify it properly)
-    const userId = Buffer.from(token, 'base64').toString('utf8').split(':')[0];
-    
-    const userRef = db.ref(`users/${userId}`);
-    const snapshot = await userRef.once('value');
-    const user = snapshot.val();
-
-    if (!user || (user.role !== 'admin' && user.role !== 'superadmin')) {
-      return res.status(403).json({ success: false, error: 'Admin access required' });
-    }
-
-    req.userId = userId;
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('❌ Admin auth error:', error);
-    res.status(401).json({ success: false, error: 'Invalid token' });
+// ✅ Lazy database access
+const getDb = () => {
+  if (!admin.apps.length) {
+    throw new Error('Firebase not initialized');
   }
+  return admin.database();
 };
 
-// Get all markets (including inactive ones for admin)
-router.get('/markets', requireAdmin, async (req, res) => {
+// Auth middleware
+const requireAuth = (req, res, next) => {
+  if (!req.session || !req.session.userId) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  req.userId = req.session.userId;
+  next();
+};
+
+// Check admin status
+router.get('/check', requireAuth, async (req, res) => {
   try {
-    console.log('📊 Admin: Fetching all markets');
+    const db = getDb();
+    const adminRef = db.ref(`admins/${req.userId}`);
+    const adminSnap = await adminRef.once('value');
+    const isAdmin = adminSnap.exists() && adminSnap.val()?.isAdmin === true;
+    res.json({ isAdmin, userId: req.userId });
+  } catch (error) {
+    res.json({ isAdmin: false });
+  }
+});
+
+// Get all markets
+router.get('/markets', requireAuth, async (req, res) => {
+  try {
+    const includeResolved = req.query.includeResolved === 'true';
+    const markets = await getAllMarkets();
     
-    const marketsRef = db.ref('markets');
-    const snapshot = await marketsRef.once('value');
-    const allMarkets = snapshot.val() || {};
-
-    const marketsArray = Object.keys(allMarkets).map(id => ({
-      id,
-      ...allMarkets[id]
-    }));
-
-    console.log(`✅ Found ${marketsArray.length} markets`);
-
-    res.json({
-      success: true,
-      markets: marketsArray
-    });
-  } catch (error) {
-    console.error('❌ Error fetching admin markets:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch markets',
-      details: error.message 
-    });
-  }
-});
-
-// Create new market
-router.post('/create-market', requireAdmin, async (req, res) => {
-  try {
-    console.log('📝 Admin: Creating new market', req.body);
+    let marketsList = Object.entries(markets).map(([id, m]) => ({ id, ...m }));
     
-    const { title, description, category, startTime, endTime, options, status } = req.body;
-
-    if (!title || !options || options.length < 2) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Title and at least 2 options required' 
-      });
+    if (!includeResolved) {
+      marketsList = marketsList.filter(m => m.status !== 'resolved');
     }
-
-    // Validate probabilities sum to 100
-    const totalProb = options.reduce((sum, opt) => sum + Number(opt.probability), 0);
-    if (Math.abs(totalProb - 100) > 0.01) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Probabilities must sum to 100%' 
-      });
-    }
-
-    const marketsRef = db.ref('markets');
-    const newMarketRef = marketsRef.push();
-
-    const marketData = {
-      title: title || description, // Use title or fall back to description
-      description,
-      category: category || 'other',
-      startTime: startTime || null,
-      endTime: endTime || null,
-      options: options.map(opt => ({
-        name: opt.name,
-        probability: Number(opt.probability),
-        odds: Number(opt.odds)
-      })),
-      status: status || 'open',
-      result: null,
-      volume: '0',
-      createdAt: new Date().toISOString(),
-      createdBy: req.userId
-    };
-
-    await newMarketRef.set(marketData);
-
-    console.log('✅ Market created:', newMarketRef.key);
-
+    
     res.json({
       success: true,
-      marketId: newMarketRef.key,
-      message: 'Market created successfully'
+      markets: marketsList,
+      count: marketsList.length
     });
   } catch (error) {
-    console.error('❌ Error creating market:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to create market',
-      details: error.message 
-    });
+    console.error('Get markets error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Delete market
-router.delete('/market/:marketId', requireAdmin, async (req, res) => {
+// Freeze market
+router.post('/freeze-market', requireAuth, async (req, res) => {
   try {
-    const { marketId } = req.params;
-    console.log('🗑️ Admin: Deleting market', marketId);
-
-    const marketRef = db.ref(`markets/${marketId}`);
-    const snapshot = await marketRef.once('value');
-
-    if (!snapshot.exists()) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Market not found' 
-      });
-    }
-
-    // Check if there are active bets
-    const betsRef = db.ref('bets');
-    const betsSnapshot = await betsRef.orderByChild('marketId').equalTo(marketId).once('value');
-    const bets = betsSnapshot.val();
-
-    if (bets && Object.keys(bets).length > 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Cannot delete market with active bets. Resolve the market first.' 
-      });
-    }
-
-    await marketRef.remove();
-
-    console.log('✅ Market deleted:', marketId);
-
-    res.json({
-      success: true,
-      message: 'Market deleted successfully'
-    });
+    const { marketId, freeze } = req.body;
+    const result = await setMarketFreeze(req.userId, marketId, freeze);
+    res.json(result);
   } catch (error) {
-    console.error('❌ Error deleting market:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete market',
-      details: error.message 
-    });
+    console.error('Freeze market error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Update market status
-router.patch('/market/:marketId/status', requireAdmin, async (req, res) => {
+// Set manual odds
+router.post('/set-odds', requireAuth, async (req, res) => {
   try {
-    const { marketId } = req.params;
-    const { status } = req.body;
+    const { marketId, yesOdds, noOdds } = req.body;
+    
+    if (!yesOdds || !noOdds) {
+      return res.status(400).json({ error: 'Both odds required' });
+    }
+    
+    const result = await setMarketOdds(req.userId, marketId, yesOdds, noOdds);
+    res.json(result);
+  } catch (error) {
+    console.error('Set odds error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    console.log(`📝 Admin: Updating market ${marketId} status to ${status}`);
+// Reset odds
+router.post('/reset-odds', requireAuth, async (req, res) => {
+  try {
+    const { marketId } = req.body;
+    const result = await removeOddsOverride(req.userId, marketId);
+    res.json(result);
+  } catch (error) {
+    console.error('Reset odds error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    const validStatuses = ['open', 'closed', 'frozen', 'resolved'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
-      });
+// Resolve market (supports both 'outcome' and 'result')
+router.post('/resolve-market', requireAuth, async (req, res) => {
+  try {
+    const { marketId, outcome, result } = req.body;
+    const finalOutcome = outcome || result;
+    
+    if (!finalOutcome) {
+      return res.status(400).json({ error: 'outcome or result required' });
+    }
+    
+    const resolutionResult = await resolveMarket(marketId, finalOutcome, req.userId);
+    res.json(resolutionResult);
+  } catch (error) {
+    console.error('Resolve market error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all users
+router.get('/users', requireAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const adminRef = db.ref(`admins/${req.userId}`);
+    const adminSnap = await adminRef.once('value');
+    
+    if (!adminSnap.exists() || !adminSnap.val()?.isAdmin) {
+      return res.status(403).json({ error: 'Admin required' });
     }
 
-    const marketRef = db.ref(`markets/${marketId}`);
-    const snapshot = await marketRef.once('value');
+    const usersRef = db.ref('users');
+    const snapshot = await usersRef.once('value');
+    const users = [];
 
-    if (!snapshot.exists()) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Market not found' 
+    snapshot.forEach(childSnap => {
+      const user = childSnap.val();
+      users.push({
+        id: childSnap.key,
+        ...user,
+        password: undefined,
+        passwordHash: undefined
       });
-    }
+    });
 
-    await marketRef.update({ status });
-
-    console.log('✅ Market status updated:', marketId);
+    users.sort((a, b) => (b.balance || 0) - (a.balance || 0));
 
     res.json({
       success: true,
-      message: `Market status updated to ${status}`
+      users,
+      count: users.length
     });
   } catch (error) {
-    console.error('❌ Error updating market status:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update market status',
-      details: error.message 
+    console.error('Get users error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update user balance
+router.post('/user-balance', requireAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const { userId, amount, reason = 'Admin adjustment' } = req.body;
+    
+    if (!userId || amount === undefined) {
+      return res.status(400).json({ error: 'userId and amount required' });
+    }
+    
+    const adminRef = db.ref(`admins/${req.userId}`);
+    const adminSnap = await adminRef.once('value');
+    
+    if (!adminSnap.exists() || !adminSnap.val()?.isAdmin) {
+      return res.status(403).json({ error: 'Admin required' });
+    }
+
+    const userRef = db.ref(`users/${userId}`);
+    const userSnap = await userRef.once('value');
+    
+    if (!userSnap.exists()) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userSnap.val();
+    const oldBalance = user.balance || 0;
+    const newBalance = oldBalance + parseFloat(amount);
+
+    if (newBalance < 0) {
+      return res.status(400).json({ error: 'Cannot reduce balance below zero' });
+    }
+
+    await userRef.update({ balance: newBalance });
+
+    res.json({
+      success: true,
+      message: `Balance ${amount > 0 ? 'added' : 'deducted'}`,
+      oldBalance,
+      newBalance,
+      change: amount
     });
+  } catch (error) {
+    console.error('Update balance error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get platform stats
+router.get('/stats', requireAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const adminRef = db.ref(`admins/${req.userId}`);
+    const adminSnap = await adminRef.once('value');
+    
+    if (!adminSnap.exists() || !adminSnap.val()?.isAdmin) {
+      return res.status(403).json({ error: 'Admin required' });
+    }
+
+    const [usersSnap, marketsSnap, betsSnap] = await Promise.all([
+      db.ref('users').once('value'),
+      db.ref('markets').once('value'),
+      db.ref('bets').once('value')
+    ]);
+
+    const users = [];
+    const markets = [];
+    const bets = [];
+
+    usersSnap.forEach(snap => users.push(snap.val()));
+    marketsSnap.forEach(snap => markets.push(snap.val()));
+    betsSnap.forEach(snap => bets.push(snap.val()));
+
+    const totalBalance = users.reduce((sum, u) => sum + (u.balance || 0), 0);
+    const totalWagered = users.reduce((sum, u) => sum + (u.totalWagered || 0), 0);
+    const totalWon = users.reduce((sum, u) => sum + (u.totalWon || 0), 0);
+    const houseProfit = totalWagered - totalWon;
+
+    res.json({
+      success: true,
+      stats: {
+        users: {
+          total: users.length,
+          totalBalance,
+          averageBalance: users.length > 0 ? totalBalance / users.length : 0
+        },
+        markets: {
+          total: markets.length,
+          active: markets.filter(m => m.status === 'active').length,
+          resolved: markets.filter(m => m.status === 'resolved').length,
+          totalVolume: markets.reduce((sum, m) => sum + (m.volume || 0), 0)
+        },
+        bets: {
+          total: bets.length,
+          pending: bets.filter(b => b.status === 'pending').length,
+          resolved: bets.filter(b => b.status !== 'pending').length
+        },
+        financial: {
+          totalWagered,
+          totalWon,
+          houseProfit,
+          profitMargin: totalWagered > 0 
+            ? ((houseProfit / totalWagered) * 100).toFixed(2) + '%' 
+            : '0%'
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

@@ -7,10 +7,11 @@ class AdminValidator {
   static async isAdmin(userId) {
     try {
       const db = admin.database();
-      const adminRef = db.ref(`admins/${userId}`);
-      const snapshot = await adminRef.once("value");
+      const userRef = db.ref(`users/${userId}/role`);
+      const snapshot = await userRef.once("value");
+      const role = snapshot.val();
 
-      return snapshot.exists() && snapshot.val() === true;
+      return role === "admin";
     } catch (error) {
       console.error("Error checking admin status:", error);
       return false;
@@ -28,4 +29,4 @@ class AdminValidator {
   }
 }
 
-module.exports = {AdminValidator};
+module.exports = { AdminValidator };

@@ -1,6 +1,6 @@
-const admin = require("firebase-admin");
+import admin from "firebase-admin";
 
-class AdminValidator {
+export class AdminValidator {
   /**
    * Check if user is admin
    */
@@ -45,5 +45,3 @@ class AdminValidator {
     console.log("✅ Admin access granted");
   }
 }
-
-module.exports = { AdminValidator };

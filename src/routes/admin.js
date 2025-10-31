@@ -1,6 +1,7 @@
-// src/routes/admin.js
-const express = require("express");
-const { AdminValidator } = require("../utils/adminValidator");
+import express from "express";
+import { AdminValidator } from "../utils/adminValidator.js";
+import admin from "firebase-admin";
+
 const router = express.Router();
 
 // Admin check endpoint
@@ -20,7 +21,7 @@ router.get("/admin/check", async (req, res) => {
     const token = authHeader.replace("Bearer ", "");
     
     // Verify Firebase token
-    const adminAuth = require("firebase-admin").auth();
+    const adminAuth = admin.auth();
     const decodedToken = await adminAuth.verifyIdToken(token);
     const userId = decodedToken.uid;
 
@@ -57,7 +58,7 @@ router.get("/admin/users", async (req, res) => {
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const adminAuth = require("firebase-admin").auth();
+    const adminAuth = admin.auth();
     const decodedToken = await adminAuth.verifyIdToken(token);
     const userId = decodedToken.uid;
 
@@ -65,7 +66,7 @@ router.get("/admin/users", async (req, res) => {
     await AdminValidator.validateAdmin(userId);
 
     // Get all users from Firebase
-    const db = require("firebase-admin").database();
+    const db = admin.database();
     const usersRef = db.ref("users");
     const snapshot = await usersRef.once("value");
     const usersData = snapshot.val();
@@ -99,7 +100,7 @@ router.post("/admin/user-balance", async (req, res) => {
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const adminAuth = require("firebase-admin").auth();
+    const adminAuth = admin.auth();
     const decodedToken = await adminAuth.verifyIdToken(token);
     const adminId = decodedToken.uid;
 
@@ -117,7 +118,7 @@ router.post("/admin/user-balance", async (req, res) => {
     }
 
     // Update user balance
-    const db = require("firebase-admin").database();
+    const db = admin.database();
     const userRef = db.ref(`users/${userId}`);
     const snapshot = await userRef.once("value");
     
@@ -151,4 +152,4 @@ router.post("/admin/user-balance", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

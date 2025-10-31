@@ -419,11 +419,13 @@ app.post('/api/admin/freeze-market', async (req, res) => {
     if (!adminId || !marketId) return res.status(400).json({ success: false, error: 'Missing required fields: adminId, marketId' });
     if (!db) return res.status(500).json({ success: false, error: 'Database not available' });
 
-    const adminRef = db.ref(`admins/${adminId}`);
-    const adminSnap = await adminRef.once('value');
-    const isAdmin = adminSnap.exists() && !!adminSnap.val();
+const userRef = db.ref(`users/${adminId}/role`);
+const snapshot = await userRef.once('value');
+const role = snapshot.val();
 
-    if (!isAdmin) return res.status(403).json({ success: false, error: 'Unauthorized: admin required' });
+if (role !== 'admin') {
+  return res.status(403).json({ success: false, error: 'Unauthorized: admin required' });
+}
 
     await db.ref(`markets/${marketId}`).update({ frozen: !!freeze });
     return res.json({ success: true, message: `Market ${marketId} ${freeze ? 'frozen' : 'unfrozen'}` });

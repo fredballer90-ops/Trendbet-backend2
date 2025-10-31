@@ -129,9 +129,10 @@ router.get('/users', requireAuth, async (req, res) => {
     const adminRef = db.ref(`admins/${req.userId}`);
     const adminSnap = await adminRef.once('value');
     
-    if (!adminSnap.exists() || !adminSnap.val()?.isAdmin) {
-      return res.status(403).json({ error: 'Admin required' });
-    }
+
+if (!adminSnap.exists() || adminSnap.val() !== true) {
+  return res.status(403).json({ error: 'Admin required' });
+}
 
     const usersRef = db.ref('users');
     const snapshot = await usersRef.once('value');

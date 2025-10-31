@@ -4,8 +4,8 @@ import admin from "firebase-admin";
 
 const router = express.Router();
 
-// Admin check endpoint
-router.get("/admin/check", async (req, res) => {
+// Admin check endpoint - remove the /admin prefix since it's already mounted at /api/admin
+router.get("/check", async (req, res) => {
   try {
     console.log("🔍 Admin check request received");
     
@@ -50,7 +50,7 @@ router.get("/admin/check", async (req, res) => {
 });
 
 // Get all users (for admin panel)
-router.get("/admin/users", async (req, res) => {
+router.get("/users", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -92,7 +92,7 @@ router.get("/admin/users", async (req, res) => {
 });
 
 // Add user balance
-router.post("/admin/user-balance", async (req, res) => {
+router.post("/user-balance", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
